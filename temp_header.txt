@@ -1,0 +1,176 @@
+import 'dart:convert';
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
+import '../models/ai_model.dart';
+
+class ScrapingService {
+  static const String _cacheKey = 'cached_ai_models';
+  static const String _lastFetchKey = 'last_fetch_time';
+  static const Duration _cacheDuration = Duration(hours: 6);
+
+  Future<List<AIModel>> getModels({bool forceRefresh = false}) async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!forceRefresh) {
+      final cached = prefs.getString(_cacheKey);
+      final lastFetch = prefs.getInt(_lastFetchKey) ?? 0;
+      final now = DateTime.now().millisecondsSinceEpoch;
+      if (cached != null && (now - lastFetch) < _cacheDuration.inMilliseconds) {
+        final List<dynamic> decoded = jsonDecode(cached);
+        return decoded.map((e) => AIModel.fromJson(e as Map<String, dynamic>)).toList();
+      }
+    }
+    try {
+      final models = await _scrapeAllSources();
+      final encoded = jsonEncode(models.map((m) => m.toJson()).toList());
+      await prefs.setString(_cacheKey, encoded);
+      await prefs.setInt(_lastFetchKey, DateTime.now().millisecondsSinceEpoch);
+      return models;
+    } catch (e) {
+      final cached = prefs.getString(_cacheKey);
+      if (cached != null) {
+        final List<dynamic> decoded = jsonDecode(cached);
+        return decoded.map((e) => AIModel.fromJson(e as Map<String, dynamic>)).toList();
+      }
+      return _getBuiltinModels();
+    }
+  }
+
+  Future<List<AIModel>> _scrapeAllSources() async {
+    final models = <AIModel>[];
+    try {
+      final openRouterModels = await _scrapeOpenRouter();
+      models.addAll(openRouterModels);
+    } catch (_) {}
+    if (models.isNotEmpty) return models;
+    return _getBuiltinModels();
+  }
+
+  Future<List<AIModel>> _scrapeOpenRouter() async {
+    final models = <AIModel>[];
+    final response = await http.get(
+      Uri.parse('https://openrouter.ai/api/v1/models'),
+      headers: {'Content-Type': 'application/json'},
+    ).timeout(const Duration(seconds: 15));
+
+    if (response.statusCode == 200) {
+      final data = jsonDecode(response.body);
+      final List<dynamic> modelList = data['data'] as List<dynamic>? ?? [];
+      for (final item in modelList) {
+        try {
+          final id = item['id'] as String? ?? '';
+          final name = item['name'] as String? ?? id;
+          String provider = 'Unknown';
+          if (id.contains('openai')) provider = 'OpenAI';
+          else if (id.contains('anthropic')) provider = 'Anthropic';
+          else if (id.contains('google') || id.contains('gemini')) provider = 'Google';
+          else if (id.contains('meta') || id.contains('llama')) provider = 'Meta';
+          else if (id.contains('mistral')) provider = 'Mistral';
+          else if (id.contains('cohere')) provider = 'Cohere';
+          else if (id.contains('deepseek')) provider = 'DeepSeek';
+          else if (id.contains('xai') || id.contains('grok')) provider = 'xAI';
+          else if (id.contains('perplexity')) provider = 'Perplexity';
+
+          final pricing = item['pricing'] as Map<String, dynamic>?;
+          final double? inputPrice = pricing != null ? double.tryParse((pricing['prompt'] ?? '0').toString()) : null;
+          final double? outputPrice = pricing != null ? double.tryParse((pricing['completion'] ?? '0').toString()) : null;
+          final contextLength = item['context_length'] as int?;
+          final description = item['description'] as String? ?? '';
+
+          String category = 'General';
+          final idl = id.toLowerCase();
+          if (idl.contains('vision') || idl.contains('multimodal')) category = 'Vision';
+          else if (idl.contains('instruct') || idl.contains('chat')) category = 'Chat';
+          else if (idl.contains('code') || idl.contains('coder')) category = 'Code';
+          else if (idl.contains('reasoning') || idl.contains('thinking')) category = 'Reasoning';
+          else if (idl.contains('embedding') || idl.contains('embed')) category = 'Embeddings';
+          else if (idl.contains('image') || idl.contains('dall-e') || idl.contains('stable-diffusion')) category = 'Image';
+          else if (idl.contains('audio') || idl.contains('whisper') || idl.contains('tts')) category = 'Audio';
+
+          models.add(AIModel(
+            name: name,
+            provider: provider,
+            description: description,
+            strengths: _inferStrengths(name, provider, category),
+            inputPricePer1kTokens: inputPrice,
+            outputPricePer1kTokens: outputPrice,
+            contextWindow: contextLength,
+            category: category,
+            supportsVision: idl.contains('vision'),
+            supportsFunctionCalling: true,
+            supportsStreaming: true,
+            websiteUrl: _getWebsiteUrl(id, provider),
+            benchmarkScore: _getBenchmarkHint(name, provider),
+          ));
+        } catch (_) {
+          continue;
+        }
+      }
+    }
+    return models;
+  }
+
+  String _inferStrengths(String name, String provider, String category) {
+    final lower = name.toLowerCase();
+    final s = <String>[];
+    if (lower.contains('gpt-4') || lower.contains('claude-3') || lower.contains('gemini-ultra')) {
+      s.addAll(['Best-in-class reasoning', 'Complex task handling']);
+    }
+    if (lower.contains('gpt-4o') || lower.contains('claude-3.5') || lower.contains('gemini-1.5')) {
+      s.addAll(['Multimodal capabilities', 'Fast response times']);
+    }
+    if (lower.contains('gpt-3.5') || lower.contains('haiku') || lower.contains('flash') || lower.contains('mistral-small') || lower.contains('llama-3')) {
+      s.addAll(['Cost-effective', 'Fast inference']);
+    }
+    if (lower.contains('code') || lower.contains('coder')) {
+      s.addAll(['Code generation & review', 'Debugging assistance']);
+    }
+    if (lower.contains('reasoning') || lower.contains('thinking')) {
+      s.addAll(['Deep reasoning', 'Step-by-step analysis']);
+    }
+    if (category == 'Vision') {
+      s.addAll(['Image understanding', 'Visual question answering']);
+    }
+    if (lower.contains('embedding')) {
+      s.addAll(['Semantic search', 'Text similarity']);
+    }
+    if (s.isEmpty) {
+      s.addAll(['General purpose AI', 'Natural language processing']);
+    }
+    return s.join(' \u2022 ');
+  }
+
+  String? _getBenchmarkHint(String name, String provider) {
+    final lower = name.toLowerCase();
+    if (lower.contains('gpt-4o')) return 'MMLU: 88.7%';
+    if (lower.contains('gpt-4-turbo')) return 'MMLU: 86.5%';
+    if (lower.contains('gpt-4')) return 'MMLU: 86.4%';
+    if (lower.contains('claude-3.5')) return 'MMLU: 88.9%';
+    if (lower.contains('claude-3-opus')) return 'MMLU: 86.8%';
+    if (lower.contains('claude-3-sonnet')) return 'MMLU: 79.0%';
+    if (lower.contains('gemini-ultra')) return 'MMLU: 90.0%';
+    if (lower.contains('gemini-1.5')) return 'MMLU: 85.9%';
+    if (lower.contains('gemini-flash')) return 'MMLU: 77.8%';
+    if ((lower.contains('llama-3') && (lower.contains('70b') || lower.contains('405b')))) return 'MMLU: 86.1%';
+    if (lower.contains('llama-3')) return 'MMLU: 68.9%';
+    if (lower.contains('mistral-large')) return 'MMLU: 84.0%';
+    if (lower.contains('mistral-medium')) return 'MMLU: 75.0%';
+    if (lower.contains('mistral-small')) return 'MMLU: 72.0%';
+    if (lower.contains('deepseek')) return 'MMLU: 88.3%';
+    return null;
+  }
+
+
+  String _getWebsiteUrl(String id, String provider) {
+    final lower = id.toLowerCase();
+    if (lower.contains('openai') || provider == 'OpenAI') return 'https://openai.com';
+    if (lower.contains('anthropic') || provider == 'Anthropic') return 'https://anthropic.com';
+    if (lower.contains('google') || lower.contains('gemini') || provider == 'Google') return 'https://deepmind.google/technologies/gemini';
+    if (lower.contains('meta') || lower.contains('llama') || provider == 'Meta') return 'https://www.llama.com';
+    if (lower.contains('mistral') || provider == 'Mistral') return 'https://mistral.ai';
+    if (lower.contains('deepseek') || provider == 'DeepSeek') return 'https://deepseek.com';
+    if (lower.contains('xai') || lower.contains('grok') || provider == 'xAI') return 'https://x.ai';
+    if (lower.contains('cohere') || provider == 'Cohere') return 'https://cohere.com';
+    if (lower.contains('perplexity')) return 'https://perplexity.ai';
+    return 'https://' + provider.toLowerCase() + '.ai';
+  }
+
