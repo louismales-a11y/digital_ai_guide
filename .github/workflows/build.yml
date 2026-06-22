@@ -1,0 +1,66 @@
+name: Build iOS & macOS
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build on macOS
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.44.2"
+          channel: "stable"
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Build iOS (release)
+        run: |
+          flutter build ios --release --no-codesign
+          echo "iOS build done"
+
+      - name: Build macOS (release)
+        run: |
+          flutter build macos --release
+          echo "macOS build done"
+
+      - name: Package iOS artifact
+        run: |
+          mkdir -p artifacts
+          cd build/ios/iphoneos
+          VERSION=$(grep "^version:" ../../pubspec.yaml | awk '{print $2}')
+          zip -r ../../artifacts/digital-ai-guide-iOS-${VERSION}.zip Runner.app
+          cd ../..
+
+      - name: Package macOS artifact
+        run: |
+          cd build/macos/Build/Products/Release
+          VERSION=$(grep "^version:" ../../../../pubspec.yaml | awk '{print $2}')
+          for d in *.app; do
+            if [ -d "$d" ]; then
+              tar czf ../../../../artifacts/digital-ai-guide-macOS-${VERSION}.tar.gz "$d"
+              break
+            fi
+          done
+          cd ../../../..
+
+      - name: Upload iOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: digital-ai-guide-iOS
+          path: artifacts/*iOS*.zip
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: digital-ai-guide-macOS
+          path: artifacts/*macOS*.tar.gz

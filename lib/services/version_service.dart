@@ -5,8 +5,8 @@ import 'dart:convert';
 /// Central version tracking for Digital AI Guide
 class AppVersion {
   /// Current app version (from pubspec.yaml)
-  static const String version = '1.18.13';
-  static const int buildNumber = 58;
+  static const String version = '1.18.15';
+  static const int buildNumber = 60;
   
   /// Human-readable version label
   static const String label = 'v$version (build $buildNumber)';

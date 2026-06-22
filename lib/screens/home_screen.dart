@@ -123,7 +123,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                     borderRadius: BorderRadius.circular(12),
                   ),
-                  child: const Icon(Icons.auto_awesome, color: Colors.black, size: 24),
+                  child: Image.asset("assets/logo.png", width: 28, height: 28, fit: BoxFit.contain),
                 ),
               ),
               const SizedBox(width: 14),
